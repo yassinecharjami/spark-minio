@@ -44,7 +44,7 @@ object Spark extends App {
   val tarPath = s"$targetTmpPath/$timestamp"
 
   val bucket = "spark-bucket"
-  val objectKey = s"srv/$timestamp"
+  val objectKey = s"srv/$timestamp.tar"
 
   // Étape 1 : générer les deux URLs
   val (putUrl, getUrl) = MinioPresignedUrls.generatePresignedUrls(
