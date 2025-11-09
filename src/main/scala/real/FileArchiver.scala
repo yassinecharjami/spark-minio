@@ -22,11 +22,19 @@ object FileArchiver extends App {
 
     if (!fs.exists(targetPath)) throw new IllegalArgumentException(s"path ${targetPath.toString} does not exist")
 
-    val allFiles: Seq[FileStatus] = listAllRecursive(fs, targetPath).filterNot(_.getPath.getName.endsWith(".tar"))
+    // On cherche la (ou les) partitions dans le répertoire
+    val partitions = fs.listStatus(targetPath).filter(_.isDirectory)
+    if (partitions.isEmpty)
+      throw new IllegalStateException(s"Aucune partition trouvée sous ${targetPath.toString}")
+
+    // 👉 Ici on prend la première partition (ou la plus récente si besoin)
+    val latestPartition = partitions.maxBy(_.getModificationTime).getPath
+
+    val allFiles: Seq[FileStatus] = listAllRecursive(fs, latestPartition).filterNot(_.getPath.getName.endsWith(".tar"))
 
     val timestamp = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())
 
-    val tarPath = new Path(s"$targetPath/$timestamp.tar")
+    val tarPath = new Path(s"${latestPartition.getParent}/$timestamp.tar")
 
     val tarOut: TarArchiveOutputStream = new TarArchiveOutputStream(
       new BufferedOutputStream(fs.create(tarPath, true))
@@ -36,14 +44,11 @@ object FileArchiver extends App {
 
     allFiles.foreach { status: FileStatus =>
 
-      val relativePath: String = getRelativePath(targetPath, status.getPath)
+      val relativePath: String = getRelativePath(latestPartition, status.getPath)
 
       val entry = new TarArchiveEntry(relativePath)
 
-      if (status.isDirectory) {
-        tarOut.putArchiveEntry(entry)
-        tarOut.closeArchiveEntry()
-      } else {
+      if (!status.isDirectory) {
         entry.setSize(status.getLen)
         tarOut.putArchiveEntry(entry)
         val in = fs.open(status.getPath)

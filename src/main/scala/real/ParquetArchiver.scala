@@ -4,6 +4,7 @@ import org.apache.commons.compress.archivers.tar.{TarArchiveEntry, TarArchiveOut
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import real.FileArchiver.{getRelativePath, listAllRecursive}
 
 import java.io.BufferedOutputStream
 import java.net.URI
@@ -45,16 +46,28 @@ object ParquetArchiver {
   }
 
   /** Archive tout le contenu du dossier tmp (fichiers + dossiers) */
-  def createTarFromTmp(targetPath: Path, conf: Configuration): Path = {
+  def archiveFromTmp(targetPath: Path, conf: Configuration): Path = {
     val fs = FileSystem.get(conf)
 
     if (!fs.exists(targetPath)) throw new IllegalArgumentException(s"path ${targetPath.toString} does not exist")
 
-    val allFiles: Seq[FileStatus] = listAllRecursive(fs, targetPath).filterNot(_.getPath.getName.endsWith(".tar"))
+    // On cherche la (ou les) partitions dans le répertoire
+    val partitions = fs.listStatus(targetPath).filter(_.isDirectory)
+    if (partitions.isEmpty)
+      throw new IllegalStateException(s"Aucune partition trouvée sous ${targetPath.toString}")
+
+    // 👉 Ici on prend la première partition (ou la plus récente si besoin)
+    val latestPartition = partitions.maxBy(_.getModificationTime).getPath
+
+    val allFiles: Seq[FileStatus] = listAllRecursive(fs, latestPartition).filterNot(_.getPath.getName.endsWith(".tar"))
 
     val timestamp = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())
 
-    val tarPath = new Path(s"$targetPath/$timestamp.tar")
+    println(s"partitionPath: $latestPartition")
+
+    val tarPath = new Path(s"$latestPartition/$timestamp.tar")
+
+    println(s"tarPath: $tarPath")
 
     val tarOut: TarArchiveOutputStream = new TarArchiveOutputStream(
       new BufferedOutputStream(fs.create(tarPath, true))
@@ -64,14 +77,11 @@ object ParquetArchiver {
 
     allFiles.foreach { status: FileStatus =>
 
-      val relativePath: String = getRelativePath(targetPath, status.getPath)
+      val relativePath: String = getRelativePath(latestPartition, status.getPath)
 
       val entry = new TarArchiveEntry(relativePath)
 
-      if (status.isDirectory) {
-        tarOut.putArchiveEntry(entry)
-        tarOut.closeArchiveEntry()
-      } else {
+      if (!status.isDirectory) {
         entry.setSize(status.getLen)
         tarOut.putArchiveEntry(entry)
         val in = fs.open(status.getPath)
@@ -171,29 +181,16 @@ object ParquetArchiver {
 
   /** Workflow complet */
   def process(df: DataFrame, tmpPath: String, targetPath: String, tarName: Option[String] = None)
-             (implicit spark: SparkSession): Unit = {
+             (implicit spark: SparkSession): Path = {
 
     val conf = spark.sparkContext.hadoopConfiguration
 
-    try {
       println("➡️  Écriture des fichiers temporaires...")
       writeTmp(df, tmpPath)
 
       println("🗜️  Création de l’archive tar (avec partitions)...")
-      val tarPath = createTarFromTmp(new Path(tmpPath), conf)
+      val tarPath = archiveFromTmp(new Path(tmpPath), conf)
       println(s"✅  Archive créée : $tarPath")
-
-      println("🚚  Déplacement des fichiers/partitions vers la cible Hive...")
-      overwriteTargetWithTmpPartitions(tmpPath, targetPath, conf)
-
-      println("🧹  Nettoyage du répertoire temporaire...")
-      //cleanTmpExceptTar(tmpPath, conf)
-
-      println("✅  Succès total : fichiers déplacés, archive créée et tmp nettoyé.")
-    } catch {
-      case e: Exception =>
-        println(s"❌  Erreur lors du traitement : ${e.getMessage}")
-        e.printStackTrace()
-    }
+    tarPath
   }
 }

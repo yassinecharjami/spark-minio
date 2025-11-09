@@ -12,7 +12,7 @@ object PresignedUploader {
    * @param filePath chemin local du fichier à envoyer
    */
   def uploadFileWithPresignedPutUrl(presignedPutUrl: String, filePath: String): Unit = {
-    val file = new java.io.File(filePath)
+    val file = new java.io.File(filePath.stripPrefix("file:"))
     if (!file.exists()) throw new IllegalArgumentException(s"Fichier introuvable: $filePath")
 
     val url = new URL(presignedPutUrl)
